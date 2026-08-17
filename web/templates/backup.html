@@ -10,6 +10,13 @@
     are kept; older entries are pruned automatically when a new one is created.
     Backups taken before a restore are tagged <code>pre-restore</code>.
   </p>
+  {% if service_control_available %}
+  <p style="margin-bottom:0;color:var(--fg-mid);font-size:13px">
+    Restoring stops <code>{{ service_unit }}.service</code>, waits for the
+    database to be released, swaps the save, and starts the server again.
+    Expect a few seconds of downtime; close the game client first.
+  </p>
+  {% endif %}
   <p style="margin-bottom:0">
     Source: <code>{{ game_db_path }}</code>
     {% if not game_db_exists %}
@@ -29,8 +36,20 @@
 
 <h1 class="bracket-header">Archives ({{ backups|length }})</h1>
 
-{% if lunar_tear_running %}
+{% if lunar_tear_running and not service_control_available %}
   <div class="banner error">&gt; Restore disabled :: {{ lunar_tear_running }}</div>
+{% elif lunar_tear_running and service_control_available %}
+  <div class="banner">&gt; Game server is running. Restoring will stop
+    <code>{{ service_unit }}.service</code>, replace the save, and start it again.</div>
+{% endif %}
+
+{% if not service_control_available and service_control_reason %}
+  <div class="panel" style="margin-bottom:16px">
+    <p style="margin:0;color:var(--fg-mid);font-size:13px">
+      Automatic server control is off &mdash; {{ service_control_reason }}
+      Stop the server yourself before restoring.
+    </p>
+  </div>
 {% endif %}
 
 {% if backups %}
@@ -54,10 +73,14 @@
         <td><code>{{ b.filename }}</code></td>
         <td>
           <form method="post" action="/backups/restore" class="confirm-form"
-                onsubmit="return confirm('Restore from {{ b.filename }}?\n\nA pre-restore safety backup will be taken first.');">
+                onsubmit="return confirm('Restore from {{ b.filename }}?\n\nA pre-restore safety backup will be taken first.{% if service_control_available %}\n\nThe game server will be stopped for a few seconds and started again. Close the game client first.{% endif %}');">
             <input type="hidden" name="filename" value="{{ b.filename }}">
+            {% if service_control_available %}
+              <input type="hidden" name="manage_server" value="on">
+            {% endif %}
             <input type="text" name="confirm" placeholder="type RESTORE" size="12" required pattern="RESTORE" title="Type RESTORE in uppercase to confirm">
-            <button type="submit" class="danger" {% if lunar_tear_running %}disabled{% endif %}>Restore</button>
+            <button type="submit" class="danger"
+                    {% if lunar_tear_running and not service_control_available %}disabled{% endif %}>Restore</button>
           </form>
         </td>
       </tr>

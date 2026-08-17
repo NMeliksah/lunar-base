@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from web import config
-from web.services import backup_service
+from web.services import backup_service, service_control
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(config.ROOT / "web" / "templates"))
@@ -37,6 +37,9 @@ def home(request: Request, message: str | None = None, error: str | None = None)
             "game_db_exists": config.GAME_DB_PATH.exists(),
             "game_db_path": config.GAME_DB_PATH,
             "lunar_tear_running": backup_service.detect_lunar_tear_running(),
+            "service_control_available": service_control.available(),
+            "service_unit": service_control.UNIT_NAME,
+            "app_version": config.APP_VERSION,
         },
     )
 
@@ -55,6 +58,12 @@ def list_backups(request: Request, message: str | None = None, error: str | None
             "game_db_exists": config.GAME_DB_PATH.exists(),
             "game_db_path": config.GAME_DB_PATH,
             "lunar_tear_running": backup_service.detect_lunar_tear_running(),
+            "service_control_available": service_control.available(),
+            "service_control_reason": (
+                None if service_control.available()
+                else service_control.unavailable_reason()
+            ),
+            "service_unit": service_control.UNIT_NAME,
         },
     )
 
@@ -71,18 +80,48 @@ def create_backup_action():
 
 
 @router.post("/backups/restore")
-def restore_backup_action(filename: str = Form(...), confirm: str = Form(...)):
+def restore_backup_action(
+    filename: str = Form(...),
+    confirm: str = Form(...),
+    manage_server: str = Form(default=""),
+):
+    """Restore a backup, optionally stopping and restarting lunar-tear.
+
+    `manage_server` arrives as the checkbox value ("on") or empty. When
+    set, the service is stopped, the swap performed, and the service
+    started again — the manual sequence, automated.
+    """
     if confirm.strip() != "RESTORE":
-        return _redirect("/backups", error="Confirmation phrase did not match. Type RESTORE in uppercase to confirm.")
+        return _redirect(
+            "/backups",
+            error="Confirmation phrase did not match. Type RESTORE in uppercase to confirm.",
+        )
+
+    wants_service_control = bool(manage_server.strip())
+    if wants_service_control and not service_control.available():
+        return _redirect("/backups", error=service_control.unavailable_reason())
+
     try:
-        info = backup_service.restore_backup(filename)
+        result = backup_service.restore_backup(
+            filename, manage_server=wants_service_control
+        )
     except backup_service.RestoreBlocked as e:
         return _redirect("/backups", error=str(e))
+    except service_control.ServiceError as e:
+        # The server may or may not be running now; say so rather than
+        # implying a clean outcome.
+        return _redirect(
+            "/backups",
+            error=f"Server control failed: {e} Check the service state before continuing.",
+        )
     except FileNotFoundError as e:
         return _redirect("/backups", error=str(e))
     except Exception as e:
         return _redirect("/backups", error=f"Restore failed: {e}")
-    return _redirect(
-        "/backups",
-        message=f"Restored from {info.filename}. A pre-restore safety backup was taken first.",
-    )
+
+    parts = [f"Restored from {result.source.filename}."]
+    if result.steps:
+        parts.append(" ".join(f"{s}." for s in result.steps))
+    if result.server_restarted:
+        parts.append("Game server is back up.")
+    return _redirect("/backups", message=" ".join(parts))

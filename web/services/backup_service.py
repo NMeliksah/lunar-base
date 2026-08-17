@@ -9,15 +9,15 @@
 
 from __future__ import annotations
 
-import json
+import os
 import shutil
-import socket
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from web import config
+from web.services import service_control
 
 
 class RestoreBlocked(Exception):
@@ -122,34 +122,80 @@ def prune_to_last_n(n: int) -> int:
 
 
 def detect_lunar_tear_running() -> str | None:
-    """Return a human-readable reason string if lunar-tear is detected as running.
+    """Return a human-readable reason string if lunar-tear looks like it is up.
 
-    Probes the gRPC port (8003 by default, or whatever is in .wizard.json). If
-    something is listening, lunar-tear is almost certainly up.
+    Probes the gRPC port (8003 by default, or whatever .wizard.json says).
+    Something listening means lunar-tear is almost certainly running.
     """
-    grpc_port = config.LUNAR_TEAR_DEFAULT_GRPC_PORT
-    if config.WIZARD_CONFIG_PATH.exists():
-        try:
-            cfg = json.loads(config.WIZARD_CONFIG_PATH.read_text(encoding="utf-8"))
-            grpc_port = int(cfg.get("grpc_port", grpc_port))
-        except (json.JSONDecodeError, ValueError, OSError):
-            pass
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.5)
-    try:
-        if sock.connect_ex(("127.0.0.1", grpc_port)) == 0:
-            return f"lunar-tear gRPC server is listening on port {grpc_port}. Stop it before restoring."
-    finally:
-        sock.close()
+    port = service_control.grpc_port()
+    if service_control.port_is_open(port):
+        return (f"lunar-tear gRPC server is listening on port {port}. "
+                "Stop it before restoring.")
     return None
 
 
-def restore_backup(filename: str) -> BackupInfo:
+@dataclass(frozen=True)
+class RestoreResult:
+    """Outcome of a restore, including any service management performed."""
+    source: BackupInfo
+    steps: tuple[str, ...]
+    server_restarted: bool
+
+
+def _swap_database(backup_path: Path) -> None:
+    """Replace game.db with the backup, atomically.
+
+    Copying straight over game.db leaves a window where the file is half
+    written; a crash there loses the save entirely. Writing a sibling
+    temp file and renaming it means the path is only ever the complete
+    old database or the complete new one. os.replace is atomic on the
+    same filesystem, which a sibling path guarantees.
+    """
+    target = config.GAME_DB_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(target.name + ".restore-tmp")
+
+    try:
+        shutil.copyfile(backup_path, staging)
+        os.replace(staging, target)
+    except PermissionError as exc:
+        # Windows refuses to replace a file another process holds open.
+        # POSIX allows it silently, so this only fires on Windows -- and
+        # it fires instead of corrupting anything, which is the outcome
+        # we want. Translate it into something the user can act on.
+        raise RestoreBlocked(
+            "The game database is locked by another process, so it cannot "
+            "be replaced. Stop the Lunar Tear server (and close anything "
+            f"else holding {target.name}) and try again."
+        ) from exc
+    finally:
+        if staging.exists():
+            try:
+                staging.unlink()
+            except OSError:
+                pass
+
+    # Drop stale WAL/SHM sidecars so SQLite reopens against the new file
+    # instead of replaying a log belonging to the old one.
+    for suffix in ("-wal", "-shm"):
+        sidecar = target.with_name(target.name + suffix)
+        if sidecar.exists():
+            try:
+                sidecar.unlink()
+            except OSError:
+                pass
+
+
+def restore_backup(filename: str, manage_server: bool = False) -> RestoreResult:
     """Overwrite game.db with the named backup file.
 
-    Refuses if lunar-tear is running. Takes a safety pre-restore backup first.
-    Returns the BackupInfo of the restored source.
+    With `manage_server` False the behaviour is unchanged: refuse while
+    lunar-tear is listening.
+
+    With `manage_server` True, perform the sequence by hand-rolling it:
+    stop the unit, wait for the port to close, snapshot, swap, start the
+    unit again. The server is restarted even if the swap fails, so a
+    failure never leaves the game server down.
     """
     backup_path = (config.BACKUP_DIR / filename).resolve()
     if backup_path.parent != config.BACKUP_DIR.resolve():
@@ -157,25 +203,50 @@ def restore_backup(filename: str) -> BackupInfo:
     if not backup_path.exists() or not backup_path.is_file():
         raise FileNotFoundError(f"Backup not found: {filename}")
 
-    blocker = detect_lunar_tear_running()
-    if blocker:
-        raise RestoreBlocked(blocker)
+    if not manage_server:
+        blocker = detect_lunar_tear_running()
+        if blocker:
+            raise RestoreBlocked(blocker)
+        if config.GAME_DB_PATH.exists():
+            create_backup(reason="pre-restore")
+        _swap_database(backup_path)
+        return RestoreResult(
+            source=_info_from_path(backup_path),
+            steps=("Restored while the server was already stopped",),
+            server_restarted=False,
+        )
 
-    if config.GAME_DB_PATH.exists():
-        create_backup(reason="pre-restore")
+    if not service_control.available():
+        raise RestoreBlocked(service_control.unavailable_reason())
 
-    # Remove stale WAL/SHM sidecars so SQLite reopens cleanly.
-    for sidecar_name in (config.GAME_DB_PATH.name + "-wal", config.GAME_DB_PATH.name + "-shm"):
-        sidecar = config.GAME_DB_PATH.parent / sidecar_name
-        if sidecar.exists():
-            try:
-                sidecar.unlink()
-            except OSError:
-                pass
+    report = service_control.ServiceReport()
+    was_active = service_control.is_active()
 
-    config.GAME_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(backup_path, config.GAME_DB_PATH)
-    return _info_from_path(backup_path)
+    if was_active:
+        # Raises before anything is touched if the unit will not stop or
+        # the port stays open.
+        service_control.stop_and_wait(report)
+    else:
+        report.note("Server was already stopped")
+
+    try:
+        if config.GAME_DB_PATH.exists():
+            create_backup(reason="pre-restore")
+            report.note("Pre-restore snapshot taken")
+        _swap_database(backup_path)
+        report.note(f"Database replaced from {backup_path.name}")
+    finally:
+        # Bring the server back up regardless of what happened above. The
+        # swap is atomic, so on failure the old database is intact and
+        # starting again is safe.
+        if was_active:
+            service_control.start_and_wait(report)
+
+    return RestoreResult(
+        source=_info_from_path(backup_path),
+        steps=tuple(report.steps),
+        server_restarted=report.started,
+    )
 
 
 def _info_from_path(p: Path) -> BackupInfo:

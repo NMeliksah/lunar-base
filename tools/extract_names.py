@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -20,7 +21,57 @@ except ImportError as exc:  # pragma: no cover - import guard
 SCRIPT_DIR = Path(__file__).resolve().parent
 LUNAR_BASE_ROOT = SCRIPT_DIR.parent
 DEFAULT_MASTER_DATA_DIR = (LUNAR_BASE_ROOT / "data" / "masterdata").resolve()
-DEFAULT_REVISIONS_DIR = (LUNAR_BASE_ROOT.parent / "lunar-tear" / "server" / "assets" / "revisions").resolve()
+def _lunar_tear_roots() -> list[Path]:
+    """Candidate Lunar Tear directories, most explicit first.
+
+    Mirrors web/config.detect_lunar_tear_dir() without importing it, so
+    this script stays runnable standalone. The install need not be at
+    ../lunar-tear: release archives unpack under names like
+    lunar-tear-server-v1.0.0-linux-amd64.
+    """
+    candidates: list[Path] = []
+
+    from_env = os.environ.get("LUNAR_TEAR_DIR")
+    if from_env:
+        candidates.append(Path(from_env).expanduser())
+
+    settings = LUNAR_BASE_ROOT / ".lunar-base.json"
+    try:
+        saved = json.loads(settings.read_text(encoding="utf-8")).get("lunar_tear_dir")
+        if saved:
+            candidates.append(Path(saved).expanduser())
+    except (json.JSONDecodeError, OSError, AttributeError):
+        pass
+
+    candidates.append(LUNAR_BASE_ROOT.parent / "lunar-tear")
+
+    try:
+        for sibling in sorted(LUNAR_BASE_ROOT.parent.iterdir()):
+            if sibling.is_dir() and sibling.resolve() != LUNAR_BASE_ROOT.resolve():
+                candidates.append(sibling)
+    except OSError:
+        pass
+
+    return candidates
+
+
+def _default_revisions_dir() -> Path:
+    """Locate lunar-tear's revisions tree.
+
+    A source checkout nests assets under lunar-tear/server/; the prebuilt
+    release keeps them flat at lunar-tear/assets/.
+    """
+    for root in _lunar_tear_roots():
+        for candidate in (
+            root / "server" / "assets" / "revisions",
+            root / "assets" / "revisions",
+        ):
+            if candidate.is_dir():
+                return candidate.resolve()
+    return (LUNAR_BASE_ROOT.parent / "lunar-tear" / "assets" / "revisions").resolve()
+
+
+DEFAULT_REVISIONS_DIR = _default_revisions_dir()
 DEFAULT_OUTPUT_DIR = (LUNAR_BASE_ROOT / "data" / "names").resolve()
 DEFAULT_TEXT_REVISION = "auto"
 
@@ -591,6 +642,36 @@ def sanitize_output_path(path: Path) -> str:
     return str(path).replace(str(Path.home()), "/home/user")
 
 
+# Asset dumps come in two shapes. The raw resource_dump archive unpacks as
+#   revisions/<rev>/assetbundle/...
+# while lunar-tear v1.0.0 expects a platform level:
+#   revisions/<rev>/<platform>/assetbundle/...
+# Probe the bare form first, then any platform subdirectory.
+PLATFORM_DIRS: tuple[str, ...] = ("android", "ios")
+
+
+def _text_root_for_revision(revision_dir: Path) -> Path | None:
+    """Return the English text root inside one revision directory, if present."""
+    direct = revision_dir / "assetbundle" / "text" / "en"
+    if direct.is_dir():
+        return direct
+
+    for platform in PLATFORM_DIRS:
+        candidate = revision_dir / platform / "assetbundle" / "text" / "en"
+        if candidate.is_dir():
+            return candidate
+
+    # Unknown platform name: accept any single child that holds the tree.
+    for child in sorted(revision_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        candidate = child / "assetbundle" / "text" / "en"
+        if candidate.is_dir():
+            return candidate
+
+    return None
+
+
 def available_text_roots(revisions_dir: Path) -> list[tuple[int, Path]]:
     if not revisions_dir.is_dir():
         return []
@@ -603,8 +684,8 @@ def available_text_roots(revisions_dir: Path) -> list[tuple[int, Path]]:
             revision = int(revision_dir.name)
         except ValueError:
             continue
-        text_root = revision_dir / "assetbundle" / "text" / "en"
-        if text_root.is_dir():
+        text_root = _text_root_for_revision(revision_dir)
+        if text_root is not None:
             roots.append((revision, text_root))
 
     roots.sort(key=lambda item: item[0])

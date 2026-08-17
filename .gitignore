@@ -5,12 +5,27 @@ __pycache__/
 .venv/
 venv/
 
-# Lunar-base data: backups, master-data dumps, anything derived from the game
+# Runtime data: save backups, decoded master data, extracted names.
+# All derived from the user's own game files -- never committed.
 data/
 
-# Compiled Go shim. Built locally by setup.bat against the user's lunar-tear
-# checkout so the binary always matches their lunar-tear revision.
+# Compiled Go shim, both platforms. Built locally by the launcher against a
+# lunar-tear source tree so the binary always matches the server revision.
+# Release archives ship it as an attached asset, not from the repository.
+tools/grant/grant
 tools/grant/grant.exe
+
+# Launcher scratch space: downloaded lunar-tear source and Go toolchain.
+# Hundreds of megabytes, entirely reproducible.
+.build/
+
+# Saved host, port, and the resolved lunar-tear path. Machine-specific, and
+# committing it would override a fresh clone's own auto-detection.
+.lunar-base.json
+
+# Release archives produced by build-release.sh
+dist/
+.release-staging/
 
 # IDE / OS
 .vscode/

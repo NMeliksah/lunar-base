@@ -1,0 +1,48 @@
+# Reference copy of the unit that ./start-lunar-base.sh and
+# ./install-service.sh generate for you. You should not need this file --
+# both of those write the real one with your actual paths filled in.
+#
+# It is here for anyone who wants to install by hand. Replace the three
+# marked values, then:
+#
+#     sudo cp lunar-base.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now lunar-base
+#
+[Unit]
+Description=Lunar Base - save manager for a Lunar Tear private server
+Documentation=https://github.com/NMeliksah/lunar-base
+After=network-online.target
+Wants=network-online.target
+
+# Deliberately NOT After=lunar-tear.service. Lunar Base manages that unit
+# (stop / restore / start) and must stay reachable while it is down --
+# that is exactly when the restore page is needed.
+
+[Service]
+Type=simple
+User=root
+
+# REPLACE: absolute path to your lunar-base directory
+WorkingDirectory=/path/to/lunar-base
+
+# REPLACE: same directory, plus the venv python. Adjust host and port to
+# taste; 0.0.0.0 exposes it to your network, 127.0.0.1 keeps it local.
+ExecStart=/path/to/lunar-base/.venv/bin/python -m uvicorn web.app:app --host 0.0.0.0 --port 8888
+
+# OPTIONAL: only needed when Lunar Tear is not a sibling directory and you
+# have not run the wizard (which records the path in .lunar-base.json).
+# Environment=LUNAR_TEAR_DIR=/path/to/lunar-tear
+
+# OPTIONAL: only if your Lunar Tear unit is not named lunar-tear.service.
+# Environment=LUNAR_TEAR_UNIT=lunar-tear
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lunar-base
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

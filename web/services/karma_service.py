@@ -90,9 +90,15 @@ def _load_text_by_text_id() -> dict[int, str]:
         sys.path.insert(0, str(tools_dir))
     import extract_names  # type: ignore[import-not-found]
 
-    text_root = extract_names.DEFAULT_REVISIONS_DIR / "0" / "assetbundle" / "text" / "en"
-    if not text_root.exists():
+    # Resolve the text root the same way extract_names does, so this keeps
+    # working across both lunar-tear layouts and platform-nested revisions.
+    revisions_dir = config.REVISIONS_DIR
+    if not revisions_dir.is_dir():
+        revisions_dir = extract_names.DEFAULT_REVISIONS_DIR
+    roots = extract_names.available_text_roots(revisions_dir)
+    if not roots:
         return {}
+    text_root = roots[-1][1]
     entries = extract_names.load_bundle_entries(text_root, "ability", [""])
     out: dict[int, str] = {}
     prefix = "ability.description.long."

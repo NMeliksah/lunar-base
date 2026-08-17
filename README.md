@@ -2,160 +2,287 @@
 
 A browser-based management interface for someone who lives on the moon and manages The Cage. Sits alongside **lunar-tear** and lets you back up, restore, and edit the player database from a browser.
 
-> Web-based control panel for a [Lunar Tear](https://github.com/Walter-Sparrow/lunar-tear) private server.
+> Web-based control panel for a [Lunar Tear](https://github.com/Walter-Sparrow/lunar-tear) private server. Runs on Linux and Windows.
+
+---
+
+## What it does
+
+| | |
+|---|---|
+| **Save data** | Snapshot the database at any time, restore any snapshot, automatic rolling pool of 50 |
+| **User viewer** | Currencies, inventory counts, and stackable totals for each account |
+| **Item Editor** | Grant or top up gems, gold, materials, and consumables |
+| **Costume Editor** | Grant playable costumes and reroll their karma effects |
+| **Weapon Editor** | Grant weapons, resolving full evolution chains |
+| **Upgrade Manager** | Exalt characters, fill slab pages, max companions, weapons, and costumes |
+| **Memoir Editor** | Grant memoir sets and edit their stat rolls |
+
+Two things worth knowing before you start:
+
+**Every editor takes a backup before it writes anything.** Snapshots are tagged with the editor that triggered them, so anything you do here can be undone from the Save Data page.
+
+**Nothing is ever removed.** Grants only add; quantities are never reduced. The way back from a mistake is a restore, not an "undo".
+
+---
+
+## How it works
+
+Lunar Base never writes SQL. It reads the database directly over a read-only connection, and performs every change by handing a request to a small compiled Go program (`grant`) that imports lunar-tear's own internal functions:
+
+```
+Browser ──► Lunar Base (Python) ──┬── read ──► game.db (read-only)
+                                  │
+                                  └── write ─► grant binary ──► lunar-tear internals ──► game.db
+```
+
+That indirection is the point. Writes go through the same code paths the game server uses, so Lunar Base cannot produce a row shape the server does not understand. Editing the database directly is how saves get corrupted.
 
 ---
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.10 or newer (tested on 3.14)
-- Go 1.25 or newer on `PATH` *(needed to build the `lunar-base-grant` shim; without it stages 1+ won't work)*
-- A working [Lunar Tear](https://github.com/Walter-Sparrow/lunar-tear) checkout at the sibling path `..\lunar-tear\`
-- The [lunar-scripts](https://gitlab.com/walter-sparrow-group/lunar-scripts) repo at `..\lunar-scripts\` *(only needed for the one-time master-data dump in stage 2+)*
-- The encrypted master data binary at `..\lunar-tear\server\assets\release\20240404193219.bin.e` *(populated by the lunar-tear setup, not by us)*
+**Python 3.10 or newer.** That is the only hard requirement if you use a release archive.
 
-### Expected directory layout
+- **Linux:** the launcher installs anything missing (`pythonX.Y-venv`, and Go if you are building from source) via `apt`, asking first.
+- **Windows:** install Python from [python.org](https://www.python.org/downloads/) and tick **"Add python.exe to PATH"**. Do not use the Microsoft Store version — see [Troubleshooting](#troubleshooting).
 
-```
-NierRein Repos\
-├── lunar-tear\
-├── lunar-scripts\
-└── lunar-base\        ← this repo
-```
+**Go 1.25 or newer** — only when building from source. If Go is missing, the launcher offers to download an official toolchain into `.build/` without touching your system, and removes it afterwards.
+
+**A Lunar Tear installation** with:
+
+- `db/game.db` — created when you first run the server
+- `assets/release/*.bin.e` — the encrypted master data
+- `assets/revisions/…` — the asset dump, for extracting English names
+
+Both lunar-tear layouts are supported: the prebuilt release (flat) and a source checkout (nested under `server/`).
 
 ---
 
-## Setup & Running
+## Directory layout
 
-### Setup (run once)
+Put Lunar Base beside your Lunar Tear installation:
+
+```
+your-folder/
+├── lunar-tear/         (any name -- see below)
+└── lunar-base/         ← this
+```
+
+The launcher finds Lunar Tear by looking for its marker files, not by name, so an unrenamed `lunar-tear-server-v1.0.0-linux-amd64` works fine. If it lives somewhere else entirely:
+
+```bash
+./start-lunar-base.sh --lunar-tear /path/to/lunar-tear
+```
+
+The path is remembered afterwards.
+
+---
+
+## Installing
+
+### From a release archive (recommended)
+
+The archive contains a prebuilt `grant` binary, so you do not need Go.
+
+1. Download the archive for your platform from the [Releases](../../releases) page
+2. Unpack it beside your Lunar Tear installation
+3. Run the launcher:
+
+```bash
+# Linux
+chmod +x start-lunar-base.sh
+./start-lunar-base.sh
+```
 
 ```bat
-setup.bat
+REM Windows -- or just double-click it
+start-lunar-base.bat
 ```
 
-Creates a virtual environment in `.venv\` and installs Python dependencies from `web\requirements.txt`. Re-run any time dependencies change or after pulling new shim sources.
+### From source
 
-### Run
+Identical, except the launcher has to build the shim. It downloads lunar-tear's source and a Go toolchain into `.build/`, compiles, and offers to delete the scratch folder afterwards.
 
-```bat
-run-lunar-base.bat
+```bash
+git clone https://github.com/NMeliksah/lunar-base.git
+cd lunar-base
+./start-lunar-base.sh
 ```
 
-Then open **http://127.0.0.1:8888** in your browser. Press `Ctrl+C` in the terminal to stop the server.
+### What the first run does
 
-> The app binds to `127.0.0.1` only — no other machine on your network can reach it.
+The launcher is both installer and runner — there is no separate setup step. It will:
+
+1. Check Python, and offer to install what is missing
+2. Create a virtual environment and install dependencies
+3. Locate your Lunar Tear installation
+4. Decode master data from the `.bin.e` into JSON
+5. Extract English names from the text bundles
+6. Find or build the `grant` shim
+7. Offer to install itself as a startup service (Linux)
+8. Start, and print the address to open
+
+Steps 4 and 5 take a few minutes and only happen once. Later runs detect the output and skip.
+
+Then open **<http://127.0.0.1:8888>**.
 
 ---
 
-## Master Data & English Names
+## Running it again
 
-Stages 1+ (currency / costume / weapon / upgrade / memoir editors) require two things derived from the game's data files:
-
-- **Master data tables** decoded from the encrypted `.bin.e` to JSON.
-- **English display names** extracted from lunar-tear's text-bundle revisions.
-
-`setup.bat` handles both automatically on first run. Subsequent runs detect existing output and skip.
-
-| Step | Output directory | Source |
-|------|-----------------|--------|
-| Master-data dump | `data\masterdata\` | `..\lunar-tear\server\assets\release\*.bin.e` |
-| Names extraction | `data\names\` | `data\masterdata\` + `..\lunar-tear\server\assets\revisions\` |
-
-Both output directories are gitignored and together hold ~700 JSON files.
-
-> If the game's data ever changes (a server-side patch), redump by deleting `data\masterdata\` and `data\names\`, then re-running `setup.bat`.
-
-### Manual fallback
-
-If the master-data dump is skipped (lunar-scripts or `.bin.e` missing) or fails, run it yourself:
-
-```bat
-cd ..\lunar-scripts
-py dump_masterdata.py --input ..\lunar-tear\server\assets\release\20240404193219.bin.e --output ..\lunar-base\data\masterdata
+```bash
+./start-lunar-base.sh --prefer-saved
 ```
 
-The dump needs `pycryptodome msgpack lz4`. `setup.bat` installs these into `.venv\` automatically; for a fully manual run, install them globally:
+`--prefer-saved` reuses your stored host and port.
 
-```bat
-pip install pycryptodome msgpack lz4
-```
+### Options
 
-If the names extraction is skipped or fails, run it from the `lunar-base` root:
-
-```bat
-.venv\Scripts\python.exe tools\extract_names.py
-```
-
-Defaults read from `data\masterdata\` and `..\lunar-tear\server\assets\revisions\`, writing to `data\names\`. Run with `--help` to override any of those paths.
+| Flag | Purpose |
+|---|---|
+| `--prefer-saved` | Reuse saved settings without prompting |
+| `--host ADDR` | Bind address. Default `127.0.0.1`; use `0.0.0.0` to reach it from other machines |
+| `--port N` | Port. Default `8888` |
+| `--lunar-tear PATH` | Path to the Lunar Tear installation |
+| `--yes`, `-y` | Accept every prompt: package installs, shim build, startup service |
+| `--no-service` | Skip the startup-service offer |
+| `--text-revision N` | Read English names from a specific asset revision |
+| `--rebuild-shim` | Discard the shim binary and build it again |
+| `--lunar-tear-ref TAG` | Lunar Tear version to build the shim from. Default `v1.0.0` |
 
 ---
 
-## Stages
+## Reaching it from another machine
 
-| # | Name | Status | Description |
-|---|------|--------|-------------|
-| 0a | Backup & Restore |  Done | Snapshot `game.db`, restore from snapshots. Restore refuses while lunar-tear is running. Rolling pool keeps the 50 most recent snapshots. |
-| 0b | Read-only Viewer |  Done | Pick a player, see currencies and inventory counts. |
-| 1 | Item Editor |  Done | Top up gems, gold, materials, consumables, and important items. All grants are additive and routed through lunar-tear's `GrantPossession`. Per-tab **GRANT ALL CHOSEN** batches every row with an amount set; **MAX ALL** on Consumables/Materials runs a curated rule set in a single transaction. |
-| 2 | Costume Editor |  Done | Grant 4-star (R40) and 3-star (R30) playable costumes via `GrantCostume`. R20 story-starter costumes are excluded. Sort order: Recollections of Dusk (Frozen-Heart / F-H) » Dark Memory » Other 4-Star » 3-Star, alphabetical within each group. |
-| 3 | Weapon Editor |  Done | Grant playable weapons via `GrantWeapon`, cascading into skills, abilities, weapon notes, and story unlocks. R20 chains excluded. 519-entry catalog split into RoD » Dark Memory » Other 4-Star » 3-Star. RoD and Dark Memory grant the final R50 form; others grant the base step for in-game evolution. Hard 999-row inventory cap enforced; oversized batches refused with a clear error. Already-owned weapons filtered client-side. **After mass-adding DM weapons, run "Skip All DM Cutscenes" from the Upgrade Manager** — the game queues a forced cutscene per DM acquisition and only plays one per launch, which soft-locks progression until the queue drains. |
-| 4 | Upgrade Manager |  Done | Three sections, ten actions: **Characters** (Exalt All Available, Fill Mythic Slab Pages); **Inventory** (Add All Missing Companions / Remnants / Debris); **Mass Upgrades** (Upgrade All Companions to lv50, Upgrade All Weapons cost-bypassing the full evolve/ascend/refine/enhance/skill path, Upgrade All Costumes cost-bypassing awaken/ascend/enhance/active-skill plus 3 unlocked karma slots, Skip All DM Cutscenes to clear the queued DM-acquisition cutscene loop, Fill All Karma Slots with rarest-or-chosen effect per slot). |
-| 5 | Memoir Editor |  Done | R40 memoir grants and edits. **Build a Set** grants the 3 memoirs of any of the 18 sets at lv15 with caller-chosen primary main-stat (one of 6 percent/Agility tier-4 options) and 4 sub-stat slots (perfect-roll defaults editable). **Upgrade All Memoirs** sweeps every owned memoir to lv15. **Fix Slots** rewrites the 4 sub-status rows on a single memoir. 999-memoir inventory cap pre-flighted. |
+By default Lunar Base listens on loopback only. To use it from your phone or another computer — say when the server runs on a headless box:
 
----
-
-## Architecture
-
-```
-lunar-base\
-├── web\          Python (FastAPI + Jinja2) — UI and orchestration
-├── tools\        Supporting scripts and the Go shim
-│   ├── extract_names.py       Resolves entity IDs to English names from lunar-tear's text bundles
-│   └── grant\
-│       ├── src\               Go source for the lunar-base-grant shim
-│       └── grant.exe          Compiled binary (built by setup.bat, gitignored)
-└── data\         Gitignored — master-data JSON, name maps, and DB backups
+```bash
+./start-lunar-base.sh --host 0.0.0.0
 ```
 
-- **`web\`** reads `game.db` directly via the `sqlite3` standard library; all mutations shell out to the Go shim.
-- **`tools\grant\grant.exe`** reads one JSON request from stdin and writes one JSON response to stdout. Implemented actions: `grant_possession`, `grant_batch`, `grant_costume_batch`, `grant_weapon_batch`, `grant_companion_batch`, `grant_thought_batch`, `exalt_characters`, `release_panels`, `upgrade_all_companions`, `upgrade_all_weapons`, `upgrade_all_costumes`, `fill_karma_slots`, `set_costume_karma_batch`, `grant_memoir_batch`, `upgrade_all_memoirs`, `set_memoir_subs_batch`, `mark_contents_stories_played`.
-- **`tools\extract_names.py`** is adapted from Engels (used with permission).
-
-### How the Go shim is built
-
-Lunar Base never modifies lunar-tear's source tree, but the shim must import lunar-tear's internal grant code. Go's `internal/` package rule requires the importing code to live inside `lunar-tear/server/`, so `setup.bat` does the following each run:
-
-1. Copies `tools\grant\src\*.go` into `..\lunar-tear\server\cmd\lunar-base-grant\` (creating it if needed). The `lunar-base-grant` name is distinct from lunar-tear's own commands so its origin is obvious.
-2. Runs `go build` against that directory and writes `grant.exe` back to `tools\grant\grant.exe` inside lunar-base.
-
-The `lunar-base-grant\` directory will appear under `lunar-tear\server\cmd\` after running `setup.bat` — this is expected. Lunar Base does not edit, delete, or version-control anything else in lunar-tear's tree.
-
-> If `go` is not on your PATH, the build is skipped with a warning and stages 1+ will not work. Install Go 1.25+ and re-run `setup.bat`.
+> **There is no authentication.** Anyone who can reach the port has complete control over the save, including the ability to overwrite it from a backup. Only do this on a network you trust. If you want remote access without exposing it broadly, bind to a VPN interface address rather than `0.0.0.0`.
 
 ---
 
-## Safety
+## Running as a service (Linux, optional)
 
-- Lunar Base **only writes** to `..\lunar-tear\server\db\game.db` and `..\lunar-tear\server\cmd\lunar-base-grant\`. No other files in `lunar-tear\` or `lunar-scripts\` are touched.
-- Every mutation takes an **automatic backup** beforehand, filed under `data\backups\` with a reason tag (`item-editor`, `costume-editor`, `weapon-editor`, `upgrade-manager`, `memoir-editor`, `pre-restore`, or `manual`). Backups are pruned to the 50 most recent of any kind.
-- **Restore refuses** if it detects lunar-tear is running, preventing active database corruption.
-- All grants are **additive** — Lunar Base never decreases quantities. Roll back via backup if needed.
+The launcher offers this at the end of a run. Accepting installs a systemd unit, so Lunar Base starts on boot:
+
+```bash
+systemctl status lunar-base
+systemctl restart lunar-base
+journalctl -u lunar-base -f
+```
+
+To install it separately, without a full launcher run:
+
+```bash
+sudo ./install-service.sh
+```
+
+Decline the offer and Lunar Base simply runs in the foreground each time you start it, which is perfectly fine.
+
+### Automatic server control
+
+Restoring a backup means replacing `game.db`, and that is only safe once the server has let go of it. By default Lunar Base **refuses to restore while Lunar Tear is listening** and asks you to stop it yourself:
+
+```bash
+# stop the server, restore in the browser, then
+./wizard --prefer-saved
+```
+
+Lunar Base can do that dance for you instead — stop the server, wait for the database to actually be released, swap the file, start the server again — but only if **Lunar Tear itself is running as a systemd unit** that Lunar Base can manage. Most people just launch `./wizard` in a terminal, in which case there is no unit to control and the manual path above is what you get. Nothing is broken; the Save Data page will say `MANUAL` and tell you why.
+
+If you would like the automatic version, give Lunar Tear a unit of its own. Something like `/etc/systemd/system/lunar-tear.service`:
+
+```ini
+[Unit]
+Description=Lunar Tear private server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/path/to/lunar-tear
+ExecStart=/path/to/lunar-tear/wizard --prefer-saved
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now lunar-tear
+```
+
+`Restart=` is deliberately absent. Automatic restarts would hide a server that is failing to start, and you generally want to notice that rather than have it papered over.
+
+Name the unit `lunar-tear` and Lunar Base finds it automatically. If you prefer another name, add this to the `[Service]` section of `/etc/systemd/system/lunar-base.service`:
+
+```ini
+Environment=LUNAR_TEAR_UNIT=your-unit-name
+```
+
+On Windows there is no equivalent, so restore is always the manual path.
 
 ---
 
-## License
+## Upgrading Lunar Tear
 
-[MIT](LICENSE)
+**Rebuild the shim whenever you upgrade the server.**
+
+```bash
+./start-lunar-base.sh --rebuild-shim --lunar-tear-ref v1.2.0
+```
+
+The shim is compiled against a specific version's internal code. A mismatched one may write rows the running server does not expect — which fails quietly rather than loudly, so it is worth doing as a matter of routine.
 
 ---
 
-## Legal Disclaimer
+## Troubleshooting
 
-Lunar Tear is a fan-made, non-commercial preservation and research project dedicated to keeping a certain discontinued mobile game playable for educational and archival purposes.
+**Windows: "No Python 3.10 or newer found", but Python is installed.**
+You have the Microsoft Store stub — a placeholder that only opens the Store. Install Python from [python.org](https://www.python.org/downloads/) with "Add python.exe to PATH" ticked, then turn off the stub: *Settings → Apps → Advanced app settings → App execution aliases*, and disable `python.exe` and `python3.exe`. Open a new terminal and check `py -3 --version`.
 
-This project is not affiliated with, endorsed by, or approved by the original publisher or any of its subsidiaries. All trademarks, copyrights, and intellectual property related to the original game and its associated franchises belong to their respective owners. All code in this repository is original work developed through clean-room reverse engineering for interoperability with the game client. No copyrighted game assets, binaries, or master data are distributed in this repository.
+**Windows: "Terminate batch job (Y/N)?" after Ctrl+C.**
+Normal. Lunar Base has already shut down cleanly; that prompt is `cmd.exe` asking about the batch file itself. Either answer is fine.
 
-Use at your own risk. The author assumes no liability for any damages or legal consequences that may arise from using this software. By using or contributing to this project, you are solely responsible for ensuring your usage complies with all applicable laws in your jurisdiction.
+**Windows: the editors report a missing `grant.exe`.**
+Antivirus may have quarantined it. It is an unsigned Go binary that writes to a database, which is a reasonable heuristic hit. Restore it and add an exclusion, or build it yourself with `--rebuild-shim`.
 
-If you are a rights holder with concerns regarding this project, please contact the me directly.
+**Editors show empty lists.**
+English names were not extracted. Delete `data/names/` and run the launcher again — it will report which asset revision it used and warn if few names resolved. If the warning appears, try `--text-revision 0` for the base revision.
+
+**"No English text bundles found under the revisions tree".**
+Your asset dump is missing `assetbundle/text/en`. Both `revisions/<n>/assetbundle/…` and the platform-nested `revisions/<n>/android/assetbundle/…` are supported, so this usually means the dump did not finish unpacking.
+
+**Windows: extraction fails with path-length errors.**
+The asset tree is deeply nested and hits the 260-character limit. Keep the whole thing near the drive root — `C:\lunar\` rather than somewhere under `Documents` — or enable long path support.
+
+**Restore says the server is listening.**
+Expected without automatic server control. Stop Lunar Tear, restore, start it again. On Linux, installing the service (above) automates this.
+
+**The launcher cannot find Lunar Tear.**
+Point at it directly with `--lunar-tear /path/to/lunar-tear`. It looks for `db/`, `assets/`, `server/go.mod`, or a `wizard` binary, in either layout.
+
+---
+
+## A word of caution
+
+**Play through at least the first two chapters before running bulk actions**, so the tutorials are all behind you. The tutorials expect specific items in a specific state, and a mass upgrade moves them past what the scripted step is looking for — the weapon it asks you to tap, for instance, stops being clickable and progression stalls. Restoring a backup fixes it, but it is easier to avoid.
+
+**Take a manual backup before trying an editor for the first time.** The automatic ones have you covered, but a snapshot you took deliberately is easier to find in a list of fifty.
+
+**The game client refreshes on menu navigation, not story progression.** If a grant seems not to have applied, open and close the relevant screen.
+
+---
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
+Bundled and linked third-party code is credited in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Lunar Base ships no game content; all game data is read from an installation you supply.

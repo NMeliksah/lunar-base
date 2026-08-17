@@ -27,8 +27,20 @@
       {% endif %}
     </dd>
 
-    <dt>Stage</dt>
-    <dd>0b &mdash; Read-only viewer</dd>
+    <dt>Server control</dt>
+    <dd>
+      {% if service_control_available %}
+        <span class="status-pill online">AUTOMATIC</span>
+        <span style="margin-left:12px;color:var(--fg-mid)">Restoring stops and restarts
+          <code>{{ service_unit }}.service</code> for you.</span>
+      {% else %}
+        <span class="status-pill offline">MANUAL</span>
+        <span style="margin-left:12px;color:var(--fg-mid)">Stop the server yourself before restoring.</span>
+      {% endif %}
+    </dd>
+
+    <dt>Version</dt>
+    <dd>{{ app_version }}</dd>
   </dl>
 </div>
 
@@ -37,6 +49,20 @@
   <ul style="margin:0;padding-left:18px;line-height:1.8">
     <li><a href="/users">User viewer</a> &mdash; pick a user, see currencies, inventory counts, and stackable totals.</li>
     <li><a href="/backups">Save data management</a> &mdash; back up the game database and restore from previous snapshots.</li>
+    <li><a href="/items">Item Editor</a> &mdash; grant or top up gems, gold, materials, and consumables.</li>
+    <li><a href="/costumes">Costume Editor</a> &mdash; grant playable costumes and reroll their karma effects.</li>
+    <li><a href="/weapons">Weapon Editor</a> &mdash; grant weapons, including full evolution chains.</li>
+    <li><a href="/upgrades">Upgrade Manager</a> &mdash; exalt characters, fill slab pages, and max companions, weapons, and costumes.</li>
+    <li><a href="/memoirs">Memoir Editor</a> &mdash; grant memoir sets and edit their stat rolls.</li>
   </ul>
+</div>
+
+<div class="panel" style="margin-top:16px">
+  <p style="margin:0;color:var(--fg-mid);font-size:13px">
+    Every editor takes a backup of the game database before it writes anything,
+    so anything here can be undone from
+    <a href="/backups">Save Data</a>. Grants only ever add &mdash; nothing is
+    reduced or removed.
+  </p>
 </div>
 {% endblock %}
