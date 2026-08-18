@@ -210,6 +210,54 @@ def build_zip(staged: Path, archive: Path) -> None:
                 zf.write(path, staged.name + "/" + str(path.relative_to(staged)).replace("\\", "/"))
 
 
+def verify_staged(staged: Path) -> bool:
+    """Sanity-check a staged tree before it becomes an archive.
+
+    The repo can be correct while the build machine's working copy is not
+    -- a file renamed in git but not on disk still gets packaged under the
+    old name, and the archive then fails to start even though the source
+    on GitHub is fine. Check the tree we are about to ship, not the repo.
+    """
+    ok = True
+
+    # 1. Every module app.py imports must exist as a file.
+    app = staged / "web" / "app.py"
+    try:
+        source = app.read_text(encoding="utf-8")
+    except OSError:
+        say(f"Cannot read {app}", "err")
+        return False
+
+    for module in re.findall(r"from\s+web\.routes\s+import\s+(\w+)", source):
+        if not (staged / "web" / "routes" / f"{module}.py").exists():
+            say(f"web/app.py imports web.routes.{module}, "
+                f"but web/routes/{module}.py is missing", "err")
+            ok = False
+    for module in re.findall(r"from\s+web\.services\s+import\s+(\w+)", source):
+        if not (staged / "web" / "services" / f"{module}.py").exists():
+            say(f"web/app.py imports web.services.{module}, "
+                f"but web/services/{module}.py is missing", "err")
+            ok = False
+
+    # 2. Files named after a download rather than their import path.
+    strays = [p for p in staged.rglob("*_route.py")]
+    if strays:
+        for stray in strays:
+            say(f"Suspicious filename in staged tree: "
+                f"{stray.relative_to(staged)}", "err")
+        ok = False
+
+    # 3. Everything must at least parse.
+    for module in sorted(staged.rglob("*.py")):
+        try:
+            compile(module.read_text(encoding="utf-8"), str(module), "exec")
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            say(f"{module.relative_to(staged)} does not compile: {exc}", "err")
+            ok = False
+
+    return ok
+
+
 def audit(archive: Path) -> bool:
     if archive.suffix == ".zip":
         with zipfile.ZipFile(archive) as zf:
@@ -269,6 +317,9 @@ def main() -> int:
         staged = tmpdir / name
         stage(staged, ["start-lunar-base.sh", "install-service.sh", "lunar-base.service"])
         shutil.copy2(LINUX_SHIM, staged / "tools" / "grant" / "grant")
+        if not verify_staged(staged):
+            say("Staged tree is broken; refusing to build.", "err")
+            return 1
         archive = DIST / f"{name}.tar.gz"
         build_tar(staged, archive)
         results.append(archive)
@@ -280,6 +331,9 @@ def main() -> int:
         staged = tmpdir / name
         stage(staged, ["start-lunar-base.bat"])
         shutil.copy2(WINDOWS_SHIM, staged / "tools" / "grant" / "grant.exe")
+        if not verify_staged(staged):
+            say("Staged tree is broken; refusing to build.", "err")
+            return 1
         archive = DIST / f"{name}.zip"
         build_zip(staged, archive)
         results.append(archive)
